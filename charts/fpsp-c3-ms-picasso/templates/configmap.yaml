@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fpsp-c3-ms-picasso.fullname" . }}-config
+data:
+  default.cfg: |-
+    {{- range $key, $value := index .Values.configmap "default.cfg" }}
+      {{ $key }}={{ $value }}
+    {{- end }}

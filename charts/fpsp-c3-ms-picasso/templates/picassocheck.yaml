@@ -1,0 +1,22 @@
+# the purpose of this script is to create a scheduled task that will invoke the picasso micro service every minute 
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: picassocheck
+spec:
+  schedule: "* * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: picassocheck
+            image: alpine:3.12
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - apk --no-cache add curl; curl http://fpsp-c3-ms-picasso:7000/api/v1/picasso/check
+          restartPolicy: OnFailure

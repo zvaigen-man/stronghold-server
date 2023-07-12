@@ -1,0 +1,271 @@
+##############################################################################################
+# FirstNet - Continuous Integration                                                          #
+#                                                                                            #
+# Purpose:                                                                                   #
+#    This Pipeline manages the integration of the Micro-Service '31714-fpsp-c3-ms-picasso'   #
+#    Charts / Images using the following Template stages:                                    #
+#    - The Unit / Component Test                                                             #
+#    - Sonar scanner                                                                         #
+#    - Veracode SCA                                                                          #
+#    - Veracode SAST                                                                         #
+#    - Mutatuion Test                                                                        #
+#    - Docker build and push                                                                 #
+#    - Chart Arhciving into ACR                                                              #
+#    - Deploy Chart from ACR (Not used currently)                                            #
+#                                                                                            #
+# The Template stages exist in Main shared Repository 'Devops-Tools'.                        #
+# The Archived charts / Docker Images are pushed to Azure Container Registry.                #
+##############################################################################################
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - main
+
+#
+# Set the Build Source name [BuildNumber_SourceBranchName], so it will define the imageTag / chartVersion
+#
+name: $(Date:yyyyMMdd)$(Rev:.r)-$(SourceBranchName)
+
+#
+# The Templates Resources
+#
+resources:
+  repositories:
+  - repository: DevOps-Tools
+    type: git
+    ref: main
+    name: 31714-FPSP/31714-fpsp-c3-DevOps-Tools
+
+#
+# The Parameters used in the pipeline
+#
+parameters:
+- name: region
+  displayName: Region
+  values:
+  - west
+  # - east
+  default: 'west'
+- name: infraEnv
+  displayName: Infrastructure environment
+  values:
+  - dev
+  - devnew
+  - staging
+  #- production
+  default: 'dev'
+- name: runQG
+  displayName: Run Sonar Quality Gate?
+  type: boolean
+  default: false
+- name: veracode
+  displayName: Run Veracode scan?
+  type: boolean
+  default: false
+
+#
+# Variables that are used by multiple template stages.
+#
+variables:
+  - template: pipelines/templates/configs/${{ parameters.infraEnv }}-${{ parameters.region }}.variables.yaml@DevOps-Tools
+  - name: nodeVersion
+    value: '14.x'
+  - name: npmVersion
+    value: '7'
+  - name: npmTestCmd
+    value: 'npm run test:cov'
+  - name: microservice
+    value: 'fpsp-c3-ms-picasso'
+  - name: dockerfilePath
+    value: 'Dockerfile'
+  - name: imageTag
+    value: '$(Build.BuildNumber)'
+  - name: chartVersion
+    value: '$(Build.BuildNumber)'
+  - name: chartPath
+    value: 'charts/$(microservice)'
+  - name: chartFullName
+    value: '$(containerRegistryName)/charts/$(microservice)'
+
+pool: 31714agents
+
+#######################
+# The Template Stages #
+#######################
+stages:
+#------------------#
+# Stage: UnitTests #
+#------------------#
+- stage: UnitTests
+  displayName: Unit Tests
+
+  jobs:
+    - template: pipelines\templates\stages\unit-tests.yaml@DevOps-Tools
+      parameters:
+        nodeVersion: $(nodeVersion)
+        npmVersion: $(npmVersion)
+        npmTestCmd: $(npmTestCmd)
+
+#--------------#
+# Stage: Sonar #
+#--------------#
+- stage: Sonar
+  displayName: Sonar
+  dependsOn:
+    - UnitTests
+
+  jobs:
+    - template: pipelines\templates\stages\sonar.yaml@DevOps-Tools
+      parameters:
+        runQG: ${{ parameters.runQG }}
+        microservice: $(Build.Repository.Name)
+
+#-----------------#
+# Stage: Veracode #
+#-----------------#
+- stage: Veracode
+  displayName: Veracode
+  condition: eq('${{ parameters.veracode }}' , 'true')
+  dependsOn:
+    - UnitTests
+
+  jobs:
+    - template: pipelines\templates\stages\veracode.yaml@DevOps-Tools
+      parameters:
+        microservice: $(Build.Repository.Name)
+
+#---------------------------#
+# Stage: DockerBuildAndPush #
+#---------------------------#
+- stage: DockerBuildAndPush
+  displayName: Docker build and push
+  dependsOn:
+    - Sonar
+
+  jobs:
+    - template: pipelines\templates\stages\docker-build-push.yaml@DevOps-Tools
+      parameters:
+        imageRepository: $(microservice)
+        dockerRegistryServiceConnection: $(dockerRegistryServiceConnection)
+        containerRegistryName: $(containerRegistryName)
+        dockerfilePath: $(dockerfilePath)
+        imageTag: '$(imageTag)'
+
+#------------------------#
+# Stage: ChartArchiveACR #
+#------------------------#
+- stage: ChartArchiveACR
+  displayName: Archive Chart into ACR
+  dependsOn:
+    - DockerBuildAndPush
+
+  jobs:
+    - template: pipelines\templates\stages\chart-archive.yaml@DevOps-Tools
+      parameters:
+        containerRegistryName: $(containerRegistryName)
+        azureSubscriptionServiceConnection: '$(azureSubscriptionSp)'
+        imageTag: $(imageTag)
+        chartPath: $(chartPath)
+        chartFullName: $(chartFullName)
+        chartVersion: $(chartVersion)
+
+#------------------------#
+# Stage: E2E Tests       #
+#------------------------#
+- stage: E2E
+  displayName: E2E Tests 
+  dependsOn:
+  - ChartArchiveACR
+
+  jobs:
+  - job: E2ETests
+    displayName: E2E Tests
+    steps:
+    - task: AzureKeyVault@2
+      displayName: Key Vault Secrets Pull
+      inputs:
+        azureSubscription: '$(azureSubscriptionSp)'
+        KeyVaultName: '$(devopsKeyVaultName)'
+        SecretsFilter: '*'
+        RunAsPreJob: true
+#     - task: TriggerBuild@3
+#       displayName: 'Trigger e2e pipeline'
+#       inputs:
+#         definitionIsInCurrentTeamProject: true
+#         buildDefinition: '11977'
+#         queueBuildForUserThatTriggeredBuild: true
+#         ignoreSslCertificateErrors: false
+#         useSameSourceVersion: false
+#         useCustomSourceVersion: false
+#         useSameBranch: false
+#         branchToUse: 'main'
+#         waitForQueuedBuildsToFinish: true
+#         waitForQueuedBuildsToFinishRefreshTime: '60'
+#         failTaskIfBuildsNotSuccessful: true
+#         cancelBuildsIfAnyFails: false
+#         treatPartiallySucceededBuildAsSuccessful: false
+#         downloadBuildArtifacts: false
+#         storeInEnvironmentVariable: false
+#         templateParameters: 'picassoVersion: $(imageTag), namespace: $(microservice)-$(Build.BuildId)'
+#         authenticationMethod: 'Personal Access Token'
+#         password: '$(ado-pat-token)'
+#         enableBuildInQueueCondition: false
+#         dependentOnSuccessfulBuildCondition: false
+#         dependentOnFailedBuildCondition: false
+#         checkbuildsoncurrentbranch: false
+#         failTaskIfConditionsAreNotFulfilled: false
+#     - script: |
+#         docker tag $(containerRegistryName)/$(microservice):$(imageTag) $(containerRegistryName)/$(microservice):latest
+#         docker push $(containerRegistryName)/$(microservice):latest
+#         docker rmi $(containerRegistryName)/$(microservice):$(imageTag)
+#       displayName: Tag Latest
+#       condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
+
+#------------------------#
+# Stage: Release Trigger #
+#------------------------#
+- stage: Release
+  displayName: Release Process 
+  dependsOn:
+  - E2E
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+  - job: Release
+    displayName: Release Process
+    steps:
+    - task: AzureKeyVault@2
+      displayName: Key Vault Secrets Pull
+      inputs:
+        azureSubscription: '$(azureSubscriptionSp)'
+        KeyVaultName: '$(devopsKeyVaultName)'
+        SecretsFilter: '*'
+        RunAsPreJob: true
+    - task: TriggerBuild@3
+      displayName: 'Trigger release pipeline'
+      inputs:
+        definitionIsInCurrentTeamProject: true
+        buildDefinition: '13517'
+        queueBuildForUserThatTriggeredBuild: true
+        ignoreSslCertificateErrors: false
+        useSameSourceVersion: false
+        useCustomSourceVersion: false
+        useSameBranch: false
+        branchToUse: 'main'
+        waitForQueuedBuildsToFinish: false
+        waitForQueuedBuildsToFinishRefreshTime: '60'
+        failTaskIfBuildsNotSuccessful: false
+        cancelBuildsIfAnyFails: false
+        treatPartiallySucceededBuildAsSuccessful: false
+        downloadBuildArtifacts: false
+        storeInEnvironmentVariable: false
+        templateParameters: 'imageTag: $(imageTag), microservice: $(microservice), infraEnv: ${{ parameters.infraEnv}} ,region: ${{ parameters.region }}'
+        authenticationMethod: 'Personal Access Token'
+        password: '$(ado-pat-token)'
+        enableBuildInQueueCondition: false
+        dependentOnSuccessfulBuildCondition: false
+        dependentOnFailedBuildCondition: false
+        checkbuildsoncurrentbranch: false
+        failTaskIfConditionsAreNotFulfilled: false

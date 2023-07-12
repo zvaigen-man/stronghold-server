@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fpsp-c3-ms-picasso.fullname" . }}
+  labels:
+    app: {{ include "fpsp-c3-ms-picasso.fullname" . }}
+    release: {{ .Release.Name }}
+    {{- include "fpsp-c3-ms-picasso.labels" . | nindent 4 }}
+spec:
+{{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+{{- end }}
+  progressDeadlineSeconds: 600
+  revisionHistoryLimit: 2
+
+  selector:
+    matchLabels:
+      app: {{ include "fpsp-c3-ms-picasso.fullname" . }}
+      release: {{ .Release.Name }}
+      {{- include "fpsp-c3-ms-picasso.selectorLabels" . | nindent 6 }}
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: {{ include "fpsp-c3-ms-picasso.fullname" . }}
+        release: {{ .Release.Name }}
+        {{- include "fpsp-c3-ms-picasso.selectorLabels" . | nindent 8 }}
+
+
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: ENVIRONMENT_NAME
+            value: {{ .Values.deployment.environment }}
+          envFrom:
+          - configMapRef:
+              name: fpsp-c3-ms-picasso-config
+          - configMapRef:
+              name: fpsp-c3-secrets-config             
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            {{- toYaml .Values.deployment.ports | nindent 12 }}
+          # livenessProbe:
+          #   httpGet:
+          #     path: /api/v1/health
+          #     port: {{ .Values.service.targetPort }}
+          # readinessProbe:
+          #   httpGet:
+          #     path: /api/v1/health
+          #     port: {{ .Values.service.targetPort }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/config
+      volumes:
+        - name: config-volume
+          configMap:
+            defaultMode: 0640
+            name: fpsp-c3-ms-picasso-config
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      serviceAccountName: {{ include "fpsp-c3-ms-picasso.serviceAccountName" . }}
+
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
